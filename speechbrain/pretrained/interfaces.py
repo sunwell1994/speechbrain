@@ -19,7 +19,7 @@ import torch.nn.functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
 from speechbrain.utils.data_utils import split_path
 from speechbrain.utils.distributed import run_on_main
-
+from speechbrain.lobes.features import Fbank
 
 class Pretrained:
     """Takes a trained model and makes predictions on new data.
@@ -66,7 +66,7 @@ class Pretrained:
         # Arguments passed via the run opts dictionary. Set a limited
         # number of these, since some don't apply to inference.
         run_opt_defaults = {
-            "device": "cpu",
+            "device": "cuda",
             "data_parallel_count": -1,
             "data_parallel_backend": False,
             "distributed_launch": False,
@@ -138,8 +138,9 @@ class Pretrained:
         Similarly, it is simple to downmix a stereo file to mono.
         The path can be a local path, a web url, or a link to a huggingface repo.
         """
-        source, fl = split_path(path)
+        '''source, fl = split_path(path)
         path = fetch(fl, source=source, savedir=savedir)
+        '''
         signal, sr = torchaudio.load(path, channels_first=False)
         return self.audio_normalizer(signal, sr)
 
@@ -439,6 +440,20 @@ class TransformerASR(Pretrained):
         )
         return transformer_out
 
+    def encode_batch_spectrogram(self, spectrograms, wav_lens, n_fft=512, n_mels=80):
+        ''' Given the spectrogram with an incosistent parameters(n_fft), 
+        transform to target feats
+        spectrogram = [Batch size, n_fft/2+1, Frames]
+        '''
+        f_bank = Fbank(n_fft=n_fft, n_mels=n_mels)
+        feats = f_bank.compute(spectrograms.permute(0,2,1))
+        normalized = self.modules.normalize(feats, wav_lens)
+        pre_trans_out = self.modules.pre_transformer(normalized)
+        transformer_out = self.modules.transformer.encode(
+            pre_trans_out, wav_lens,
+        )
+        return transformer_out
+
     def transcribe_batch(self, wavs, wav_lens):
         """Transcribes the input audio into a sequence of words
         The waveforms should already be in the model's desired format.
@@ -476,6 +491,18 @@ class TransformerASR(Pretrained):
             ]
         return predicted_words, predicted_tokens
 
+    def transcribe_batch_spectrogram(self, spectrograms, wav_lens, n_fft=512, n_mels=80):
+        with torch.no_grad():
+            wav_lens = wav_lens.to(self.device)
+            encoder_out = self.encode_batch_spectrogram(spectrograms, wav_lens, n_fft=n_fft, n_mels=n_mels)
+            predicted_tokens, scores = self.modules.beam_searcher(
+                encoder_out, wav_lens
+            )
+            predicted_words = [
+                self.tokenizer.decode_ids(token_seq)
+                for token_seq in predicted_tokens
+            ]
+        return predicted_words, predicted_tokens
 
 class SpeakerRecognition(Pretrained):
     """A ready-to-use model for speaker recognition. It can be used to
