@@ -446,7 +446,7 @@ class TransformerASR(Pretrained):
         spectrogram = [Batch size, n_fft/2+1, Frames]
         '''
         f_bank = Fbank(n_fft=n_fft, n_mels=n_mels)
-        feats = f_bank.compute(spectrograms.permute(0,2,1))
+        feats = f_bank.compute_fbanks(spectrograms.permute(0,2,1))
         normalized = self.modules.normalize(feats, wav_lens)
         pre_trans_out = self.modules.pre_transformer(normalized)
         transformer_out = self.modules.transformer.encode(
