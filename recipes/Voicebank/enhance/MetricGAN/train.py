@@ -16,6 +16,7 @@ import shutil
 import torch
 import torchaudio
 import speechbrain as sb
+import pickle
 from pesq import pesq
 from enum import Enum, auto
 from hyperpyyaml import load_hyperpyyaml
@@ -79,13 +80,22 @@ class MetricGanBrain(sb.Brain):
 
         clean_wav, lens = batch.clean_sig
         clean_spec = self.compute_feats(clean_wav)
+        # print(clean_wav.size(), predict_wav.size())
+        # print(clean_spec.size(), predict_spec.size())
         mse_cost = self.hparams.compute_cost(predict_spec, clean_spec, lens)
 
+        # print("batch.id", batch.id)
         ids = self.compute_ids(batch.id, optim_name)
 
         # One is real, zero is fake
         if optim_name == "generator" or optim_name == "":
-            target_score = torch.ones(self.batch_size, 1, device=self.device)
+            if optim_name == "generator":
+                target_score = torch.ones(self.batch_size, 1, device=self.device)
+            else:
+                target_score = torch.ones(1, 1, device=self.device)
+            # if optim_name == "":
+            #     print("predict_wav", predict_wav.size(), clean_wav.size())
+            #     print("predict_spec: ", predict_spec.size(), clean_spec.size())
             est_score = self.est_score(predict_spec, clean_spec)
             self.mse_metric.append(
                 ids, predict_spec, clean_spec, lens, reduction="batch"
@@ -241,7 +251,7 @@ class MetricGanBrain(sb.Brain):
         )
         return self.modules.discriminator(combined_spec)
 
-    def write_wavs(self, clean_id, batch_id, wavs, score, lens):
+    def write_wavs(self, clean_id, batch_id, wavs, scores, lens):
         """Write wavs to files, for historical discriminator training
 
         Arguments
@@ -265,7 +275,7 @@ class MetricGanBrain(sb.Brain):
             torchaudio.save(path, data, self.hparams.Sample_rate)
 
             # Make record of path and score for historical training
-            score = float(score[i][0])
+            score = float(scores[i][0])
             clean_path = os.path.join(
                 self.hparams.train_clean_folder, cleanid + ".wav"
             )
@@ -472,11 +482,19 @@ class MetricGanBrain(sb.Brain):
 
 
 # Define audio piplines
-@sb.utils.data_pipeline.takes("noisy_wav", "clean_wav")
+@sb.utils.data_pipeline.takes("pkl")
 @sb.utils.data_pipeline.provides("noisy_sig", "clean_sig")
-def audio_pipeline(noisy_wav, clean_wav):
-    yield sb.dataio.dataio.read_audio(noisy_wav)
-    yield sb.dataio.dataio.read_audio(clean_wav)
+def audio_pipeline(pkl_path):
+    with open(pkl_path, 'rb') as fo:
+        data = pickle.load(fo)
+        # print(len(data), torch.norm(data[2]))
+        # recv = data[0]
+        recv = data[0] * torch.max(torch.abs(data[1])) / torch.max(torch.abs(data[0]))
+
+        yield recv[:len(data[1])]
+        yield data[1]
+    # yield sb.dataio.dataio.read_audio(noisy_sig)
+    # yield sb.dataio.dataio.read_audio(clean_sig)
 
 
 # For historical data
@@ -493,11 +511,12 @@ def dataio_prep(hparams):
     # Define datasets
     datasets = {}
     for dataset in ["train", "valid", "test"]:
-        datasets[dataset] = sb.dataio.dataset.DynamicItemDataset.from_json(
-            json_path=hparams[f"{dataset}_annotation"],
+        datasets[dataset] = sb.dataio.dataset.DynamicItemDataset.from_csv(
+            csv_path=hparams[f"{dataset}_annotation"],
             replacements={"data_root": hparams["data_folder"]},
             dynamic_items=[audio_pipeline],
             output_keys=["id", "noisy_sig", "clean_sig"],
+            
         )
 
     return datasets
@@ -522,18 +541,18 @@ if __name__ == "__main__":
     # Data preparation
     from voicebank_prepare import prepare_voicebank  # noqa
 
-    run_on_main(
-        prepare_voicebank,
-        kwargs={
-            "data_folder": hparams["data_folder"],
-            "save_folder": hparams["save_folder"],
-            "skip_prep": hparams["skip_prep"],
-        },
-    )
+    # run_on_main(
+    #     prepare_voicebank,
+    #     kwargs={
+    #         "data_folder": hparams["data_folder"],
+    #         "save_folder": hparams["save_folder"],
+    #         "skip_prep": hparams["skip_prep"],
+    #     },
+    # )
 
     # Create dataset objects
     datasets = dataio_prep(hparams)
-
+    print(datasets['test'])
     # Create experiment directory
     sb.create_experiment_directory(
         experiment_directory=hparams["output_folder"],
@@ -561,6 +580,7 @@ if __name__ == "__main__":
     se_brain.historical_set = {}
     se_brain.noisy_scores = {}
     se_brain.batch_size = hparams["dataloader_options"]["batch_size"]
+    se_brain.valid_batch_size = hparams["valid_dataloader_options"]["batch_size"]
     se_brain.sub_stage = SubStage.GENERATOR
 
     shutil.rmtree(hparams["MetricGAN_folder"])

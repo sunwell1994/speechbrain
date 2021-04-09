@@ -474,3 +474,6 @@ def download_vctk(destination, tmp_dir=None, device="cpu"):
 
     logger.info(f"Moving {final_zip} to {destination}")
     shutil.move(final_zip, os.path.join(destination, dataset_name + ".zip"))
+
+if __name__ == '__main__':
+    download_vctk("data")
