@@ -8,11 +8,12 @@
 # #################################
 
 # Seed needs to be set at top of yaml, before objects with parameters are made
-seed: 72301
+seed: 7232
 __set_seed: !!python/object/apply:torch.manual_seed [!ref <seed>]
 
 data_folder: !PLACEHOLDER # e.g, /data/member1/user_jasonfu/noisy-vctk-16k
-train_clean_folder: !ref <data_folder>/clean/train/
+# train_clean_folder: !ref <data_folder>/clean/train/
+train_clean_folder: /vision/vision_users/changan/learn_speech_by_visual/learning-to-hear-by-seeing/data/lhs_all_rir/train
 train_noisy_folder: !ref <data_folder>/noisy/train/
 valid_clean_folder: !ref <data_folder>/clean/val/
 test_clean_folder: !ref <data_folder>/clean/test/
@@ -46,10 +47,10 @@ skip_prep: False
 target_metric: pesq
 # Training Parameters
 number_of_epochs: 600
-number_of_samples: 1024
+number_of_samples: 600
 min_mask: 0
-train_N_batch: 32
-valid_N_batch: 128
+train_N_batch: 1
+valid_N_batch: 30
 history_portion: 0.2
 G_lr: 0.0005
 D_lr: 0.0005

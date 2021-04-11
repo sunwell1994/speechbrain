@@ -1035,7 +1035,7 @@ class Brain:
             self.step = 0
 
             # Validation stage
-            if valid_set is not None:
+            if valid_set is not None and epoch % 100 == 1:
                 self.on_stage_start(Stage.VALID, epoch)
                 self.modules.eval()
                 avg_valid_loss = 0.0

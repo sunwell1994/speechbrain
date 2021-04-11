@@ -37,7 +37,7 @@ def pack_padded_sequence(inputs, lengths):
     )
 
 
-def pad_packed_sequence(inputs):
+def pad_packed_sequence(inputs, total_length=None):
     """Returns speechbrain-formatted tensor from packed sequences.
 
     Arguments
@@ -45,9 +45,15 @@ def pad_packed_sequence(inputs):
     inputs : torch.nn.utils.rnn.PackedSequence
         An input set of sequences to convert to a tensor.
     """
-    outputs, lengths = torch.nn.utils.rnn.pad_packed_sequence(
-        inputs, batch_first=True
-    )
+    # total_length = 2000
+    if total_length is None:
+        outputs, lengths = torch.nn.utils.rnn.pad_packed_sequence(
+            inputs, batch_first=True
+        )
+    else:
+        outputs, lengths = torch.nn.utils.rnn.pad_packed_sequence(
+            inputs, batch_first=True, total_length=total_length
+        )
     return outputs
 
 
@@ -151,6 +157,7 @@ class RNN(torch.nn.Module):
 
         # Pack sequence for proper RNN handling of padding
         if lengths is not None:
+            raw_length = x.size(1)
             x = pack_padded_sequence(x, lengths)
 
         # Support custom inital state
@@ -161,7 +168,7 @@ class RNN(torch.nn.Module):
 
         # Unpack the packed sequence
         if lengths is not None:
-            output = pad_packed_sequence(output)
+            output = pad_packed_sequence(output, total_length=raw_length)
 
         return output, hn
 
@@ -262,6 +269,7 @@ class LSTM(torch.nn.Module):
 
         # Pack sequence for proper RNN handling of padding
         if lengths is not None:
+            raw_length = x.size(1)
             x = pack_padded_sequence(x, lengths)
 
         # Support custom inital state
@@ -272,7 +280,7 @@ class LSTM(torch.nn.Module):
 
         # Unpack the packed sequence
         if lengths is not None:
-            output = pad_packed_sequence(output)
+            output = pad_packed_sequence(output, total_length=raw_length)
 
         return output, hn
 
@@ -373,6 +381,7 @@ class GRU(torch.nn.Module):
 
         # Pack sequence for proper RNN handling of padding
         if lengths is not None:
+            raw_length = x.size(1)
             x = pack_padded_sequence(x, lengths)
 
         # Support custom inital state
@@ -383,7 +392,7 @@ class GRU(torch.nn.Module):
 
         # Unpack the packed sequence
         if lengths is not None:
-            output = pad_packed_sequence(output)
+            output = pad_packed_sequence(output, total_length=raw_length)
 
         return output, hn
 

@@ -35,6 +35,7 @@ def pesq_eval(pred_wav, target_wav):
     ) / 5
 
 
+
 class SubStage(Enum):
     """For keeping track of training stage progress"""
 
@@ -62,6 +63,7 @@ class MetricGanBrain(sb.Brain):
             noisy_spec = self.compute_feats(noisy_wav)
 
             # mask with "signal approximation (SA)"
+            # print("check noisy spec",noisy_spec.size())
             mask = self.modules.generator(noisy_spec, lengths=lens)
             mask = mask.clamp(min=self.hparams.min_mask).squeeze(2)
             predict_spec = torch.mul(mask, noisy_spec)
@@ -276,8 +278,9 @@ class MetricGanBrain(sb.Brain):
 
             # Make record of path and score for historical training
             score = float(scores[i][0])
+            clean_path = cleanid.split('-', 1)
             clean_path = os.path.join(
-                self.hparams.train_clean_folder, cleanid + ".wav"
+                self.hparams.train_clean_folder, clean_path[0], clean_path[1] + ".pkl"
             )
             record[name] = {
                 "enh_wav": path,
@@ -487,22 +490,23 @@ class MetricGanBrain(sb.Brain):
 def audio_pipeline(pkl_path):
     with open(pkl_path, 'rb') as fo:
         data = pickle.load(fo)
-        # print(len(data), torch.norm(data[2]))
-        # recv = data[0]
-        recv = data[0] * torch.max(torch.abs(data[1])) / torch.max(torch.abs(data[0]))
+        # recv = data[0] / torch.max(torch.abs(data[0]))
 
-        yield recv[:len(data[1])]
-        yield data[1]
-    # yield sb.dataio.dataio.read_audio(noisy_sig)
-    # yield sb.dataio.dataio.read_audio(clean_sig)
+        yield data[0][:len(data[1])]/torch.max(torch.abs(data[0][:len(data[1])]))
+        yield data[1]/torch.max(torch.abs(data[1]))
 
+        # yield data[0][:len(data[1])]
+        # yield data[1]
 
 # For historical data
 @sb.utils.data_pipeline.takes("enh_wav", "clean_wav")
 @sb.utils.data_pipeline.provides("enh_sig", "clean_sig")
 def enh_pipeline(enh_wav, clean_wav):
     yield sb.dataio.dataio.read_audio(enh_wav)
-    yield sb.dataio.dataio.read_audio(clean_wav)
+    with open(clean_wav, 'rb') as fo:
+        data = pickle.load(fo)
+        # yield data[1]
+        yield data[1]/torch.max(torch.abs(data[1]))
 
 
 def dataio_prep(hparams):
@@ -587,6 +591,7 @@ if __name__ == "__main__":
     run_on_main(create_folder, kwargs={"folder": hparams["MetricGAN_folder"]})
 
     # Load latest checkpoint to resume training
+
     se_brain.fit(
         epoch_counter=se_brain.hparams.epoch_counter,
         train_set=datasets["train"],
@@ -599,5 +604,10 @@ if __name__ == "__main__":
     test_stats = se_brain.evaluate(
         test_set=datasets["test"],
         max_key=hparams["target_metric"],
-        test_loader_kwargs=hparams["dataloader_options"],
+        test_loader_kwargs=hparams["valid_dataloader_options"],
     )
+
+    # run only the test, comment the others
+    # generated audio, use the generated audio to compute ASR and compute SISNR
+    # use the same wave as previous ASR-setup, each test-clean will be transcribe once.
+    # 
