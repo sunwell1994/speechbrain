@@ -657,7 +657,7 @@ if __name__ == "__main__":
         # evaluate is totally same as valid except requiring loading the ckpt by max keys
         # use ckpt_predicate to filter epoch == specific one
         # overwrite current checkpoint with the new max_key of pesq/stoi
-        epoch_init = 341
+        epoch_init = se_brain.hparams.val_epoch
         def ckpt_predicate(ckpt):
             return ckpt.meta['epoch'] == epoch_init
         while epoch_init <= hparams['number_of_epochs']:

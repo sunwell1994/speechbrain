@@ -54,10 +54,12 @@ def chunk_waves(noisy_wav, images, loc, rad):
     noisy_wav = noisy_wav.reshape(-1, size)
     images = images.repeat_interleave(B, dim=0)
     loc = loc.repeat_interleave(B, dim=0)
-    return noisy_wav, images, loc, rad, raw_len
+    return noisy_wav, images, loc, rad, left_padding, step
 
-def concat_wave_chunk
-
+def concat_wave_chunk(predict_wav, left_padding, step, batch_size, raw_len):
+    pedict_wav = predict_wav[:, left_padding:left_padding + step]
+    predict_wav = predict_wav.reshape(batch_size, -1)[:,:raw_len]
+    return predict_wav
 
 class SubStage(Enum):
     """For keeping track of training stage progress"""
@@ -79,26 +81,19 @@ class MetricGanBrain(sb.Brain):
         "Given an input batch computes the enhanced signal"
         batch = batch.to(self.device)
         channel = 1
-        if channel == 1:
-            if self.sub_stage == SubStage.HISTORICAL:
-                predict_wav, lens = batch.enh_sig
-            else:
-                noisy_wav, lens = batch.noisy_sig
-                images, _ = batch.images 
-                loc, _  = batch.loc
-                rad, _ = batch.ra
-
-                # chunk and add
-                if self.hparams.mode == 'test':
-                    batch_size, raw_len = noisy_wav.size()
-                    size = 255*160
-                    left_padding, step = size // 4, size // 2
-                    noisy_wav = overlap_chunk(noisy_wav, 1, size, step, left_padding)
-                    B = noisy_wav.size(1)
-                    noisy_wav = noisy_wav.reshape(-1, size)
-                    images = images.repeat_interleave(B, dim=0)
-                    loc = loc.repeat_interleave(B, dim=0)
-
+        if self.sub_stage == SubStage.HISTORICAL:
+            predict_wav, lens = batch.enh_sig
+        else:
+            noisy_wav, lens = batch.noisy_sig
+            images, _ = batch.images 
+            loc, _  = batch.loc
+            rad, _ = batch.ra
+            batch_size, raw_len = noisy_wav.size()
+                            # chunk and add
+            if self.hparams.mode == 'test':
+                noisy_wav, images, loc, rad, left_padding, step  = chunk_waves(noisy_wav, images, loc, rad):
+            
+            if channel == 1:
                 noisy_spec = self.compute_feats(noisy_wav)
                 sub_noisy_spec = noisy_spec[:, :, 1:].transpose(1,2).unsqueeze(1)
                 predict_spec = torch.zeros_like(noisy_spec)
@@ -115,31 +110,7 @@ class MetricGanBrain(sb.Brain):
                 predict_wav = self.hparams.resynth(
                     torch.expm1(predict_spec), noisy_wav
                 )
-                if self.hparams.mode == 'test':
-                    predict_wav = predict_wav[:, left_padding:left_padding + step]
-                    predict_wav = predict_wav.reshape(batch_size, -1)[:,:raw_len]
-        else:
-
-            if self.sub_stage == SubStage.HISTORICAL:
-                predict_wav, lens = batch.enh_sig
             else:
-                noisy_wav, lens = batch.noisy_sig
-                images, _ = batch.images 
-                loc, _  = batch.loc
-                rad, _ = batch.ra
-                
-                # chunk and add
-                if self.hparams.mode == 'test':
-                    batch_size, raw_len = noisy_wav.size()
-                    size = 255*160
-                    left_padding, step = size // 4, size // 2
-                    noisy_wav = overlap_chunk(noisy_wav, 1, size, step, left_padding)
-                    B = noisy_wav.size(1)
-                    noisy_wav = noisy_wav.reshape(-1, size)
-
-                    images = images.repeat_interleave(B, dim=0)
-                    loc = loc.repeat_interleave(B, dim=0)
-
                 noisy_spec = self.hparams.compute_STFT(noisy_wav)
                 sub_noisy_spec = noisy_spec[:, :, 1:, :].permute(0,3,2,1)
                 predict_spec = torch.zeros_like(noisy_spec)
@@ -154,9 +125,10 @@ class MetricGanBrain(sb.Brain):
 
                 # Also return predicted wav
                 predict_wav = self.hparams.compute_ISTFT(predict_spec)
-                if self.hparams.mode == 'test':
-                    predict_wav = predict_wav[:, left_padding:left_padding + step]
-                    predict_wav = predict_wav.reshape(batch_size, -1)[:,:raw_len]
+
+            if self.hparams.mode == 'test':
+                predict_wav = concat_wave_chunk(predict_wav, left_padding, step, batch_size, raw_len)
+
         return predict_wav
 
     def compute_objectives(self, predictions, batch, stage, optim_name=""):
@@ -750,7 +722,7 @@ if __name__ == "__main__":
         # evaluate is totally same as valid except requiring loading the ckpt by max keys
         # use ckpt_predicate to filter epoch == specific one
         # overwrite current checkpoint with the new max_key of pesq/stoi
-        epoch_init = 301
+        epoch_init = se_brain.hparams.val_epoch
         def ckpt_predicate(ckpt):
             return ckpt.meta['epoch'] == epoch_init
         while epoch_init <= hparams['number_of_epochs']:

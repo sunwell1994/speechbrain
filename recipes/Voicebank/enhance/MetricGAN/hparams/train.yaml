@@ -17,6 +17,7 @@ mode: !PLACEHOLDER
 # train_clean_folder: !ref <data_folder>/clean/train/
 # train_clean_folder: /vision/vision_users/changan/learn_speech_by_visual/learning-to-hear-by-seeing/data/lhs_all_rir/train
 valid_frequency: 1
+val_epoch: 1
 
 src_data_folder: /vision/vision_users/changan/lhs_v1
 train_clean_folder: !ref <src_data_folder>/train
