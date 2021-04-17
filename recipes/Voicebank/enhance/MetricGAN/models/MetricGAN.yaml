@@ -6,11 +6,19 @@
 # Neural parameters
 kernel_size: (5,5)
 base_channels: 15
+input_channels: 1
 
 N_fft: !PLACEHOLDER
 
-generator: !new:speechbrain.lobes.models.MetricGAN.EnhancementGenerator
+# generator: !new:speechbrain.lobes.models.MetricGAN.EnhancementGenerator
+# default predictor requires visual and location 
+generator: !new:lhs.predictor.Predictor
+    input_channel: !ref <input_channels>
+    use_visual: False
+    use_location: False 
 
 discriminator: !new:speechbrain.lobes.models.MetricGAN.MetricDiscriminator
     kernel_size: !ref <kernel_size>
     base_channels: !ref <base_channels>
+
+    

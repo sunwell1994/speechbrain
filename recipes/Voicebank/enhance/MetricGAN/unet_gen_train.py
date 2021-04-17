@@ -8,11 +8,13 @@ To run this recipe, do the following:
 Authors
  * Szu-Wei Fu 2020
  * Peter Plantinga 2021
+ * switch the generator to Unet generator and adapt to its dataloader
 """
 
 import os
 import sys
 import shutil
+import numpy as np
 import torch
 import torchaudio
 import speechbrain as sb
@@ -20,6 +22,7 @@ import pickle
 import time
 from pesq import pesq
 from enum import Enum, auto
+import torch.nn.functional as F
 from hyperpyyaml import load_hyperpyyaml
 from speechbrain.utils.metric_stats import MetricStats
 from speechbrain.processing.features import spectral_magnitude
@@ -35,6 +38,25 @@ def pesq_eval(pred_wav, target_wav):
         + 0.5
     ) / 5
 
+def overlap_chunk(input, dimension, size, step, left_padding):
+    """
+    Input shape is [Frequency bins, Frame numbers]
+    """
+    input = F.pad(input, (left_padding, size), 'constant', 0)
+    return input.unfold(dimension, size, step)
+
+def chunk_waves(noisy_wav, images, loc, rad):
+    batch_size, raw_len = noisy_wav.size()
+    size = 255*160
+    left_padding, step = size // 4, size // 2
+    noisy_wav = overlap_chunk(noisy_wav, 1, size, step, left_padding)
+    B = noisy_wav.size(1)
+    noisy_wav = noisy_wav.reshape(-1, size)
+    images = images.repeat_interleave(B, dim=0)
+    loc = loc.repeat_interleave(B, dim=0)
+    return noisy_wav, images, loc, rad, raw_len
+
+def concat_wave_chunk
 
 
 class SubStage(Enum):
@@ -56,24 +78,85 @@ class MetricGanBrain(sb.Brain):
     def compute_forward(self, batch, stage):
         "Given an input batch computes the enhanced signal"
         batch = batch.to(self.device)
+        channel = 1
+        if channel == 1:
+            if self.sub_stage == SubStage.HISTORICAL:
+                predict_wav, lens = batch.enh_sig
+            else:
+                noisy_wav, lens = batch.noisy_sig
+                images, _ = batch.images 
+                loc, _  = batch.loc
+                rad, _ = batch.ra
 
-        if self.sub_stage == SubStage.HISTORICAL:
-            predict_wav, lens = batch.enh_sig
+                # chunk and add
+                if self.hparams.mode == 'test':
+                    batch_size, raw_len = noisy_wav.size()
+                    size = 255*160
+                    left_padding, step = size // 4, size // 2
+                    noisy_wav = overlap_chunk(noisy_wav, 1, size, step, left_padding)
+                    B = noisy_wav.size(1)
+                    noisy_wav = noisy_wav.reshape(-1, size)
+                    images = images.repeat_interleave(B, dim=0)
+                    loc = loc.repeat_interleave(B, dim=0)
+
+                noisy_spec = self.compute_feats(noisy_wav)
+                sub_noisy_spec = noisy_spec[:, :, 1:].transpose(1,2).unsqueeze(1)
+                predict_spec = torch.zeros_like(noisy_spec)
+
+                # mask with "signal approximation (SA)"
+                mask = self.modules.generator(images, sub_noisy_spec, loc, rad)
+                mask = mask.clamp(min=self.hparams.min_mask)
+                sub_predict_spec = torch.mul(mask, sub_noisy_spec).squeeze(1).transpose(1,2)
+
+                predict_spec[:, :, 1:] = sub_predict_spec
+                predict_spec[:, :, :1] = noisy_spec[:, :, :1]
+
+                # Also return predicted wav
+                predict_wav = self.hparams.resynth(
+                    torch.expm1(predict_spec), noisy_wav
+                )
+                if self.hparams.mode == 'test':
+                    predict_wav = predict_wav[:, left_padding:left_padding + step]
+                    predict_wav = predict_wav.reshape(batch_size, -1)[:,:raw_len]
         else:
-            noisy_wav, lens = batch.noisy_sig
-            noisy_spec = self.compute_feats(noisy_wav)
 
-            # mask with "signal approximation (SA)"
-            # print("check noisy spec",noisy_spec.size())
-            mask = self.modules.generator(noisy_spec, lengths=lens)
-            mask = mask.clamp(min=self.hparams.min_mask).squeeze(2)
-            predict_spec = torch.mul(mask, noisy_spec)
+            if self.sub_stage == SubStage.HISTORICAL:
+                predict_wav, lens = batch.enh_sig
+            else:
+                noisy_wav, lens = batch.noisy_sig
+                images, _ = batch.images 
+                loc, _  = batch.loc
+                rad, _ = batch.ra
+                
+                # chunk and add
+                if self.hparams.mode == 'test':
+                    batch_size, raw_len = noisy_wav.size()
+                    size = 255*160
+                    left_padding, step = size // 4, size // 2
+                    noisy_wav = overlap_chunk(noisy_wav, 1, size, step, left_padding)
+                    B = noisy_wav.size(1)
+                    noisy_wav = noisy_wav.reshape(-1, size)
 
-            # Also return predicted wav
-            predict_wav = self.hparams.resynth(
-                torch.expm1(predict_spec), noisy_wav
-            )
+                    images = images.repeat_interleave(B, dim=0)
+                    loc = loc.repeat_interleave(B, dim=0)
 
+                noisy_spec = self.hparams.compute_STFT(noisy_wav)
+                sub_noisy_spec = noisy_spec[:, :, 1:, :].permute(0,3,2,1)
+                predict_spec = torch.zeros_like(noisy_spec)
+
+                # mask with "signal approximation (SA)"
+                mask = self.modules.generator(images, sub_noisy_spec, loc, rad)
+                mask = mask.clamp(min=self.hparams.min_mask)
+                sub_predict_spec = torch.mul(mask, sub_noisy_spec).permute(0,3,2,1)
+
+                predict_spec[:, :, 1:, :] = sub_predict_spec
+                predict_spec[:, :, :1, :] = noisy_spec[:, :, :1, :]
+
+                # Also return predicted wav
+                predict_wav = self.hparams.compute_ISTFT(predict_spec)
+                if self.hparams.mode == 'test':
+                    predict_wav = predict_wav[:, left_padding:left_padding + step]
+                    predict_wav = predict_wav.reshape(batch_size, -1)[:,:raw_len]
         return predict_wav
 
     def compute_objectives(self, predictions, batch, stage, optim_name=""):
@@ -82,10 +165,7 @@ class MetricGanBrain(sb.Brain):
         predict_spec = self.compute_feats(predict_wav)
 
         clean_wav, lens = batch.clean_sig
-        
         clean_spec = self.compute_feats(clean_wav)
-        # print(clean_wav.size(), predict_wav.size())
-        # print(clean_spec.size(), predict_spec.size())
         mse_cost = self.hparams.compute_cost(predict_spec, clean_spec, lens)
 
         # print("batch.id", batch.id)
@@ -97,9 +177,6 @@ class MetricGanBrain(sb.Brain):
                 target_score = torch.ones(self.batch_size, 1, device=self.device)
             else:
                 target_score = torch.ones(1, 1, device=self.device)
-            # if optim_name == "":
-            #     print("predict_wav", predict_wav.size(), clean_wav.size())
-            #     print("predict_spec: ", predict_spec.size(), clean_spec.size())
             est_score = self.est_score(predict_spec, clean_spec)
             self.mse_metric.append(
                 ids, predict_spec, clean_spec, lens, reduction="batch"
@@ -117,7 +194,7 @@ class MetricGanBrain(sb.Brain):
 
             # Write enhanced wavs during discriminator training, because we
             # compute the actual score here and we can save it
-            self.write_wavs(batch.id, ids, predict_wav, target_score, lens)
+            self.write_wavs(batch.id, ids, predict_wav, clean_wav, target_score, lens)
 
         # D Relearns to estimate the scores of previous epochs
         elif optim_name == "D_enh" and self.sub_stage == SubStage.HISTORICAL:
@@ -148,17 +225,25 @@ class MetricGanBrain(sb.Brain):
         # On validation data compute scores
         if stage != sb.Stage.TRAIN:
             # Evaluate speech quality/intelligibility
-            if self.hparams.target_metric == "stoi":
-                self.stoi_metric.append(
-                    batch.id, predict_wav, clean_wav, lens, reduction="batch"
-                )
-            elif self.hparams.target_metric == "pesq":
-                self.pesq_metric.append(
-                    batch.id, predict=predict_wav, target=clean_wav, lengths=lens
-                )
+            if self.hparams.mode == 'val':
+                if self.hparams.target_metric == "stoi":
+                    self.stoi_metric.append(
+                        batch.id, predict_wav, clean_wav, lens, reduction="batch"
+                    )
+                elif self.hparams.target_metric == "pesq":
+                    self.pesq_metric.append(
+                        batch.id, predict=predict_wav, target=clean_wav, lengths=lens
+                    )
 
             # Write wavs to file, for evaluation
-            if self.hparams.mode == 'test':
+            elif self.hparams.mode == 'test':
+                self.stoi_metric.append(
+                        batch.id, predict_wav, clean_wav, lens, reduction="batch"
+                    )
+                self.pesq_metric.append(
+                        batch.id, predict=predict_wav, target=clean_wav, lengths=lens
+                    )
+
                 lens = lens * clean_wav.shape[1]
                 for name, pred_wav, length in zip(batch.id, predict_wav, lens):
                     name += ".wav"
@@ -258,7 +343,7 @@ class MetricGanBrain(sb.Brain):
         )
         return self.modules.discriminator(combined_spec)
 
-    def write_wavs(self, clean_id, batch_id, wavs, scores, lens):
+    def write_wavs(self, clean_id, batch_id, wavs, clean_wavs, scores, lens):
         """Write wavs to files, for historical discriminator training
 
         Arguments
@@ -274,19 +359,21 @@ class MetricGanBrain(sb.Brain):
         """
         lens = lens * wavs.shape[1]
         record = {}
-        for i, (cleanid, name, pred_wav, length) in enumerate(
-            zip(clean_id, batch_id, wavs, lens)
+        for i, (cleanid, name, pred_wav, clean_wav, length) in enumerate(
+            zip(clean_id, batch_id, wavs, clean_wavs, lens)
         ):
+        # 
             path = os.path.join(self.hparams.MetricGAN_folder, name + ".wav")
             data = torch.unsqueeze(pred_wav[: int(length)].cpu(), 0)
             torchaudio.save(path, data, self.hparams.Sample_rate)
 
+
             # Make record of path and score for historical training
             score = float(scores[i][0])
-            clean_path = cleanid.split('-', 1)
-            clean_path = os.path.join(
-                self.hparams.train_clean_folder, clean_path[0], clean_path[1] + ".pkl"
-            )
+            clean_path = os.path.join(self.hparams.MetricGAN_clean_folder, name + ".wav")
+            data = torch.unsqueeze(clean_wav[: int(length)].cpu(), 0)
+            torchaudio.save(clean_path, data, self.hparams.Sample_rate)
+
             record[name] = {
                 "enh_wav": path,
                 "score": score,
@@ -297,7 +384,7 @@ class MetricGanBrain(sb.Brain):
         self.historical_set.update(record)
 
     def fit_batch(self, batch):
-        "Compute gradients and update either D or G based on sub-stage."
+        """Compute gradients and update either D or G based on sub-stage."""
         predictions = self.compute_forward(batch, sb.Stage.TRAIN)
         loss_tracker = 0
         if self.sub_stage == SubStage.CURRENT:
@@ -336,13 +423,12 @@ class MetricGanBrain(sb.Brain):
         This method calls ``fit()`` again to train the discriminator
         before proceeding with generator training.
         """
-
         self.mse_metric = MetricStats(metric=self.hparams.compute_cost)
         self.metrics = {"G": [], "D": []}
 
         if stage == sb.Stage.TRAIN:
             if self.hparams.target_metric == "pesq":
-                self.target_metric = MetricStats(metric=pesq_eval, n_jobs=30)
+                self.target_metric = MetricStats(metric=pesq_eval, n_jobs=40)
             elif self.hparams.target_metric == "stoi":
                 self.target_metric = MetricStats(metric=stoi_loss)
             else:
@@ -358,7 +444,7 @@ class MetricGanBrain(sb.Brain):
                 print("Generator training by current data...")
 
         if stage != sb.Stage.TRAIN:
-            self.pesq_metric = MetricStats(metric=pesq_eval, n_jobs=30)
+            self.pesq_metric = MetricStats(metric=pesq_eval, n_jobs=40)
             self.stoi_metric = MetricStats(metric=stoi_loss)
 
     def train_discriminator(self):
@@ -473,10 +559,16 @@ class MetricGanBrain(sb.Brain):
                 # self.checkpointer.save_checkpoint(meta=stats)
 
             else:
-                self.hparams.train_logger.log_stats(
-                    {"Epoch loaded": self.hparams.epoch_counter.current},
-                    test_stats=stats,
-                )
+                test_stats = {
+                    "mse": stage_loss,
+                    "pesq": 5 * self.pesq_metric.summarize("average") - 0.5,
+                    "stoi": -self.stoi_metric.summarize("average"),
+                }
+                print(test_stats)
+                # self.hparams.train_logger.log_stats(
+                #     {"Epoch loaded": self.hparams.epoch_counter.current},
+                #     test_stats=test_stats,
+                # )
 
     def make_dataloader(
         self, dataset, stage, ckpt_prefix="dataloader-", **loader_kwargs
@@ -532,47 +624,62 @@ class MetricGanBrain(sb.Brain):
             self.checkpointer.add_recoverable("g_opt", self.g_optimizer)
             self.checkpointer.add_recoverable("d_opt", self.d_optimizer)
 
-
-# Define audio piplines
-@sb.utils.data_pipeline.takes("pkl")
-@sb.utils.data_pipeline.provides("noisy_sig", "clean_sig")
-def audio_pipeline(pkl_path):
-    with open(pkl_path, 'rb') as fo:
-        data = pickle.load(fo)
-        yield data[0][:len(data[1])]/torch.max(torch.abs(data[0][:len(data[1])]))
-        yield data[1]/torch.max(torch.abs(data[1]))
-
 # For historical data
 @sb.utils.data_pipeline.takes("enh_wav", "clean_wav")
 @sb.utils.data_pipeline.provides("enh_sig", "clean_sig")
 def enh_pipeline(enh_wav, clean_wav):
     yield sb.dataio.dataio.read_audio(enh_wav)
-    with open(clean_wav, 'rb') as fo:
+    yield sb.dataio.dataio.read_audio(clean_wav)
+
+@sb.utils.data_pipeline.takes("pkl")
+@sb.utils.data_pipeline.provides("noisy_sig", "clean_sig", "loc", "images", "ra")
+def audio_pipeline(pkl_path):
+    with open(pkl_path, 'rb') as fo:
         data = pickle.load(fo)
-        # yield data[1]
-        yield data[1]/torch.max(torch.abs(data[1]))
+    reverb = data[0][:len(data[1])]/torch.max(torch.abs(data[0][:len(data[1])]))
+    clean = data[1]/torch.max(torch.abs(data[1]))
+    sample_len = (256 - 1) * 160
+    reverb_seg, clean_seg = torch.zeros(sample_len), torch.zeros(sample_len)
+    if len(reverb) <= sample_len:
+        reverb_seg[:len(reverb)], clean_seg[:len(reverb)] = reverb, clean
+    else:
+        start_index = np.random.randint(0, len(reverb)-sample_len)
+        reverb_seg, clean_seg = reverb[start_index:start_index+sample_len],clean[start_index:start_index+sample_len] 
+    yield reverb_seg
+    yield clean_seg
+    yield data[2]
+    yield data[3]
+    yield data[4]
 
-# @sb.utils.data_pipeline.takes("pkl")
-# @sb.utils.data_pipeline.provides("noisy_sig", "clean_sig", "loc", "images", "ra")
-# def multimodal_pipeline(pkl_path):
-#     with open(pkl_path, 'rb') as fo:
-#         data = pickle.load(fo)
-#         yield data[0][:len(data[1])]/torch.max(torch.abs(data[0][:len(data[1])]))
-#         yield data[1]/torch.max(torch.abs(data[1]))
-
+@sb.utils.data_pipeline.takes("pkl")
+@sb.utils.data_pipeline.provides("noisy_sig", "clean_sig", "loc", "images", "ra")
+def test_audio_pipeline(pkl_path):
+    with open(pkl_path, 'rb') as fo:
+        data = pickle.load(fo)
+    yield data[0][:len(data[1])]/torch.max(torch.abs(data[0][:len(data[1])]))
+    yield data[1]/torch.max(torch.abs(data[1]))
+    yield data[2]
+    yield data[3]
+    yield data[4]
 
 def dataio_prep(hparams):
     """This function prepares the datasets to be used in the brain class."""
 
     # Define datasets
     datasets = {}
-    for dataset in ["train", "valid", "test"]:
+    for dataset in ["train", "valid"]:
         datasets[dataset] = sb.dataio.dataset.DynamicItemDataset.from_csv(
             csv_path=hparams[f"{dataset}_annotation"],
             replacements={"data_root": hparams["data_folder"]},
             dynamic_items=[audio_pipeline],
-            output_keys=["id", "noisy_sig", "clean_sig"],
+            output_keys=["id", "noisy_sig", "clean_sig", "loc", "images", "ra"],
         )
+    datasets['test'] = sb.dataio.dataset.DynamicItemDataset.from_csv(
+        csv_path=hparams[f"{dataset}_annotation"],
+        replacements={"data_root": hparams["data_folder"]},
+        dynamic_items=[test_audio_pipeline],
+        output_keys=["id", "noisy_sig", "clean_sig", "loc", "images", "ra"],
+    )
 
     return datasets
 
@@ -580,7 +687,6 @@ def dataio_prep(hparams):
 def create_folder(folder):
     if not os.path.isdir(folder):
         os.makedirs(folder)
-
 
 # Recipe begins!
 if __name__ == "__main__":
@@ -592,18 +698,6 @@ if __name__ == "__main__":
 
     # Initialize ddp (useful only for multi-GPU DDP training)
     sb.utils.distributed.ddp_init_group(run_opts)
-
-    # Data preparation
-    from voicebank_prepare import prepare_voicebank  # noqa
-
-    # run_on_main(
-    #     prepare_voicebank,
-    #     kwargs={
-    #         "data_folder": hparams["data_folder"],
-    #         "save_folder": hparams["save_folder"],
-    #         "skip_prep": hparams["skip_prep"],
-    #     },
-    # )
 
     # Create dataset objects
     datasets = dataio_prep(hparams)
@@ -640,6 +734,7 @@ if __name__ == "__main__":
 
     # shutil.rmtree(hparams["MetricGAN_folder"])
     run_on_main(create_folder, kwargs={"folder": hparams["MetricGAN_folder"]})
+    run_on_main(create_folder, kwargs={"folder": hparams["MetricGAN_clean_folder"]})
 
     # Load latest checkpoint to resume training
 
@@ -649,15 +744,13 @@ if __name__ == "__main__":
         se_brain.fit(
             epoch_counter=se_brain.hparams.epoch_counter,
             train_set=datasets["train"],
-            # valid_set=datasets["valid"],
             train_loader_kwargs=hparams["dataloader_options"],
-            # valid_loader_kwargs=hparams["valid_dataloader_options"],
         )
     elif hparams["mode"] == "val":
         # evaluate is totally same as valid except requiring loading the ckpt by max keys
         # use ckpt_predicate to filter epoch == specific one
         # overwrite current checkpoint with the new max_key of pesq/stoi
-        epoch_init = 341
+        epoch_init = 301
         def ckpt_predicate(ckpt):
             return ckpt.meta['epoch'] == epoch_init
         while epoch_init <= hparams['number_of_epochs']:

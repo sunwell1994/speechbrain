@@ -8,17 +8,24 @@
 # #################################
 
 # Seed needs to be set at top of yaml, before objects with parameters are made
-seed: 7232
+seed: 7254
+# mode: val
 __set_seed: !!python/object/apply:torch.manual_seed [!ref <seed>]
 
 data_folder: !PLACEHOLDER # e.g, /data/member1/user_jasonfu/noisy-vctk-16k
+mode: !PLACEHOLDER
 # train_clean_folder: !ref <data_folder>/clean/train/
-train_clean_folder: /vision/vision_users/changan/learn_speech_by_visual/learning-to-hear-by-seeing/data/lhs_all_rir/train
+# train_clean_folder: /vision/vision_users/changan/learn_speech_by_visual/learning-to-hear-by-seeing/data/lhs_all_rir/train
+valid_frequency: 1
+
+src_data_folder: /vision/vision_users/changan/lhs_v1
+train_clean_folder: !ref <src_data_folder>/train
 train_noisy_folder: !ref <data_folder>/noisy/train/
 valid_clean_folder: !ref <data_folder>/clean/val/
 test_clean_folder: !ref <data_folder>/clean/test/
 
-MetricGAN_folder: !ref <output_folder>/enhanced_wavs
+MetricGAN_folder: !ref <output_folder>/train_enhanced_wavs
+MetricGAN_clean_folder: !ref <output_folder>/clean_enhanced_wavs
 output_folder: !ref ./results/MetricGAN/<seed>
 save_folder: !ref <output_folder>/save
 train_log: !ref <output_folder>/train_log.txt
@@ -30,15 +37,22 @@ tensorboard_logs: !ref <output_folder>/logs/
 
 # FFT paremeters
 Sample_rate: 16000
-Win_length: 32
-Hop_length: 16
+# Win_length: 32
+# Hop_length: 16
+Win_length: 25
+Hop_length: 10
 N_fft: 512
 window_fn: !name:torch.hamming_window
 
 # Data files
-train_annotation: !ref <data_folder>/train.csv
-valid_annotation: !ref <data_folder>/val.csv 
-test_annotation: !ref <data_folder>/test.csv
+# train_annotation: !ref <data_folder>/train.csv
+# valid_annotation: !ref <data_folder>/val.csv 
+# test_annotation: !ref <data_folder>/test.csv
+
+train_annotation: !ref <src_data_folder>/train.csv
+valid_annotation: !ref <src_data_folder>/val.csv 
+test_annotation: !ref <src_data_folder>/test.csv
+
 skip_prep: False
 
 # The target metrics that you want to optimize.
@@ -46,11 +60,11 @@ skip_prep: False
 # (Of course, it can be any arbitary metric.)
 target_metric: pesq
 # Training Parameters
-number_of_epochs: 600
-number_of_samples: 600
+number_of_epochs: 1200
+number_of_samples: 256
 min_mask: 0
-train_N_batch: 1
-valid_N_batch: 30
+train_N_batch: 8
+valid_N_batch: 400
 history_portion: 0.2
 G_lr: 0.0005
 D_lr: 0.0005

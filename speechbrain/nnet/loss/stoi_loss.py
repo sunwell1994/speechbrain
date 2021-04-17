@@ -168,26 +168,29 @@ def stoi_loss(y_pred_batch, y_true_batch, lens, reduction="mean"):
             stft_pred.shape[-1] - (N - 1)
         )  # number of temporal envelope vectors
 
-        X = torch.zeros(15 * M, 30)
-        Y = torch.zeros(15 * M, 30)
-        for m in range(0, M):  # Run over temporal envelope vectors
-            X[m * 15 : (m + 1) * 15, :] = OCT_true[:, m : m + N]
-            Y[m * 15 : (m + 1) * 15, :] = OCT_pred[:, m : m + N]
+        if M > 0:
+            X = torch.zeros(15 * M, 30)
+            Y = torch.zeros(15 * M, 30)
+            for m in range(0, M):  # Run over temporal envelope vectors
+                X[m * 15 : (m + 1) * 15, :] = OCT_true[:, m : m + N]
+                Y[m * 15 : (m + 1) * 15, :] = OCT_pred[:, m : m + N]
 
-        alpha = torch.norm(X, dim=-1, keepdim=True) / (
-            torch.norm(Y, dim=-1, keepdim=True) + smallVal
-        )
+            alpha = torch.norm(X, dim=-1, keepdim=True) / (
+                torch.norm(Y, dim=-1, keepdim=True) + smallVal
+            )
 
-        ay = Y * alpha
-        y = torch.min(ay, X + X * c)
+            ay = Y * alpha
+            y = torch.min(ay, X + X * c)
 
-        xn = X - torch.mean(X, dim=-1, keepdim=True)
-        xn = xn / (torch.norm(xn, dim=-1, keepdim=True) + smallVal)
+            xn = X - torch.mean(X, dim=-1, keepdim=True)
+            xn = xn / (torch.norm(xn, dim=-1, keepdim=True) + smallVal)
 
-        yn = y - torch.mean(y, dim=-1, keepdim=True)
-        yn = yn / (torch.norm(yn, dim=-1, keepdim=True) + smallVal)
-        d = torch.sum(xn * yn)
-        D[i] = d / (J * M)
+            yn = y - torch.mean(y, dim=-1, keepdim=True)
+            yn = yn / (torch.norm(yn, dim=-1, keepdim=True) + smallVal)
+            d = torch.sum(xn * yn)
+            D[i] = d / (J * M)
+        else:
+            D[i] = 0
 
     if reduction == "mean":
         return -D.mean()

@@ -759,6 +759,7 @@ class Brain:
         # Load latest checkpoint to resume training if interrupted
         if self.checkpointer is not None:
             self.checkpointer.recover_if_possible(
+                max_key='epoch',
                 device=torch.device(self.device)
             )
 
@@ -779,7 +780,7 @@ class Brain:
             if self.checkpointer is not None:
                 self.checkpointer.add_recoverable("optimizer", self.optimizer)
 
-    def on_evaluate_start(self, max_key=None, min_key=None):
+    def on_evaluate_start(self, max_key=None, min_key=None,ckpt_predicate=None):
         """Gets called at the beginning of ``evaluate()``
 
         Default implementation loads the best-performing checkpoint for
@@ -794,15 +795,16 @@ class Brain:
             Key to use for finding best checkpoint (lower is better).
             By default, passed to ``self.checkpointer.recover_if_possible()``.
         """
-
+        self.init_optimizers()
+        self._wrap_distributed()
         # Recover best checkpoint for evaluation
         if self.checkpointer is not None:
             self.checkpointer.recover_if_possible(
                 max_key=max_key,
                 min_key=min_key,
+                ckpt_predicate=ckpt_predicate,
                 device=torch.device(self.device),
             )
-
     def fit_batch(self, batch):
         """Fit one batch, override to do multiple updates.
 
@@ -1118,7 +1120,9 @@ class Brain:
         test_set,
         max_key=None,
         min_key=None,
+        ckpt_predicate=None,
         progressbar=None,
+        epoch=None,
         test_loader_kwargs={},
     ):
         """Iterate test_set and evaluate brain performance. By default, loads
@@ -1155,7 +1159,7 @@ class Brain:
             test_set = self.make_dataloader(
                 test_set, Stage.TEST, **test_loader_kwargs
             )
-        self.on_evaluate_start(max_key=max_key, min_key=min_key)
+        self.on_evaluate_start(max_key=max_key, min_key=min_key,ckpt_predicate=ckpt_predicate)
         self.on_stage_start(Stage.TEST, epoch=None)
         self.modules.eval()
         avg_test_loss = 0.0
@@ -1173,7 +1177,7 @@ class Brain:
 
             # Only run evaluation "on_stage_end" on main process
             run_on_main(
-                self.on_stage_end, args=[Stage.TEST, avg_test_loss, None]
+                self.on_stage_end, args=[Stage.TEST, avg_test_loss, epoch]
             )
         self.step = 0
 
