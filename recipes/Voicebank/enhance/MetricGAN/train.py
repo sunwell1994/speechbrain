@@ -434,22 +434,6 @@ class MetricGanBrain(sb.Brain):
                 "stoi": -self.stoi_metric.summarize("average"),
             }
 
-        if stage == sb.Stage.VALID:
-            if self.hparams.use_tensorboard:
-                valid_stats = {
-                    "mse": stage_loss,
-                    "pesq": 5 * self.pesq_metric.summarize("average") - 0.5,
-                    "stoi": -self.stoi_metric.summarize("average"),
-                }
-                self.hparams.tensorboard_train_logger.log_stats(valid_stats)
-            self.hparams.train_logger.log_stats(
-                {"Epoch": epoch},
-                train_stats={"loss": self.train_loss},
-                valid_stats=stats,
-            )
-            self.checkpointer.save_and_keep_only(
-                meta=stats, max_keys=[self.hparams.target_metric]
-            )
 
         if stage == sb.Stage.TEST:
             if self.hparams.mode == 'val':

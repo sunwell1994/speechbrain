@@ -15,7 +15,10 @@ import os
 import sys
 import shutil
 import numpy as np
+import csv
+
 import torch
+torch.set_num_threads(1)
 import torchaudio
 import speechbrain as sb
 import pickle
@@ -29,7 +32,8 @@ from speechbrain.processing.features import spectral_magnitude
 from speechbrain.nnet.loss.stoi_loss import stoi_loss
 from speechbrain.utils.distributed import run_on_main
 from speechbrain.dataio.sampler import ReproducibleWeightedRandomSampler
-
+from speechbrain.utils.metric_stats import ErrorRateStats
+from speechbrain.pretrained import TransformerASR
 
 def pesq_eval(pred_wav, target_wav):
     """Normalized PESQ (to 0-1)"""
@@ -57,9 +61,29 @@ def chunk_waves(noisy_wav, images, loc, rad):
     return noisy_wav, images, loc, rad, left_padding, step
 
 def concat_wave_chunk(predict_wav, left_padding, step, batch_size, raw_len):
-    pedict_wav = predict_wav[:, left_padding:left_padding + step]
+    predict_wav = predict_wav[:, left_padding:left_padding + step]
     predict_wav = predict_wav.reshape(batch_size, -1)[:,:raw_len]
     return predict_wav
+
+def chunk_specs(noisy_spec, images, loc, rad):
+    batch_size, raw_len, fre_bin, channel_num = noisy_spec.size()
+    size = 256
+    left_padding, step = size // 4, size // 2
+    noisy_spec = noisy_spec.permute(0,3,2,1)
+    noisy_spec = overlap_chunk(noisy_spec, 3, size, step, left_padding)
+    B = noisy_spec.size(3)
+    noisy_spec = noisy_spec.permute(0, 3,1,2,4).reshape(-1, channel_num,  fre_bin, size).permute(0,3,2,1)
+    images = images.repeat_interleave(B, dim=0)
+    loc = loc.repeat_interleave(B, dim=0)
+    return noisy_spec, images, loc, rad, left_padding, step, raw_len
+
+def concat_spec_chunk(predict_spec, left_padding, step, batch_size, raw_len):
+    fre_bin = predict_spec.size(2)
+    channel_num = predict_spec.size(3)
+    predict_spec = predict_spec.permute(0,3,2,1).view(batch_size, -1, channel_num, fre_bin, 256)
+    predict_spec = predict_spec[:, :, :, :, left_padding:left_padding + step].permute(0,3,1,4,2)
+    predict_spec = predict_spec.reshape(batch_size, fre_bin, -1, channel_num).transpose(1,2)[:,:raw_len,:, :] 
+    return predict_spec
 
 class SubStage(Enum):
     """For keeping track of training stage progress"""
@@ -74,7 +98,7 @@ class MetricGanBrain(sb.Brain):
         """Feature computation pipeline"""
         feats = self.hparams.compute_STFT(wavs)
         feats = spectral_magnitude(feats, power=0.5)
-        feats = torch.log1p(feats)
+        feats = torch.log10(feats)
         return feats
 
     def compute_forward(self, batch, stage):
@@ -89,47 +113,43 @@ class MetricGanBrain(sb.Brain):
             loc, _  = batch.loc
             rad, _ = batch.ra
             batch_size, raw_len = noisy_wav.size()
-                            # chunk and add
-            if self.hparams.mode == 'test':
-                noisy_wav, images, loc, rad, left_padding, step  = chunk_waves(noisy_wav, images, loc, rad):
             
+            # chunk and add
+            # spec_raw_len = self.compute_feats(noisy_wav).size(1)
+            if self.hparams.mode == 'test':
+                noisy_wav, images, loc, rad, left_padding, step  = chunk_waves(noisy_wav, images, loc, rad)
+
             if channel == 1:
-                noisy_spec = self.compute_feats(noisy_wav)
-                sub_noisy_spec = noisy_spec[:, :, 1:].transpose(1,2).unsqueeze(1)
-                predict_spec = torch.zeros_like(noisy_spec)
-
-                # mask with "signal approximation (SA)"
-                mask = self.modules.generator(images, sub_noisy_spec, loc, rad)
-                mask = mask.clamp(min=self.hparams.min_mask)
-                sub_predict_spec = torch.mul(mask, sub_noisy_spec).squeeze(1).transpose(1,2)
-
-                predict_spec[:, :, 1:] = sub_predict_spec
-                predict_spec[:, :, :1] = noisy_spec[:, :, :1]
-
-                # Also return predicted wav
-                predict_wav = self.hparams.resynth(
-                    torch.expm1(predict_spec), noisy_wav
-                )
+                noisy_spec = self.compute_feats(noisy_wav).unsqueeze(3)
             else:
                 noisy_spec = self.hparams.compute_STFT(noisy_wav)
-                sub_noisy_spec = noisy_spec[:, :, 1:, :].permute(0,3,2,1)
-                predict_spec = torch.zeros_like(noisy_spec)
 
-                # mask with "signal approximation (SA)"
-                mask = self.modules.generator(images, sub_noisy_spec, loc, rad)
-                mask = mask.clamp(min=self.hparams.min_mask)
-                sub_predict_spec = torch.mul(mask, sub_noisy_spec).permute(0,3,2,1)
+            sub_noisy_spec = noisy_spec[:, :, 1:,:].permute(0,3,2,1)
+            predict_spec = torch.zeros_like(noisy_spec)
+            # mask with "signal approximation (SA)"
+            mask = self.modules.generator(images, sub_noisy_spec, loc, rad)
+            # mask = mask.clamp(min=self.hparams.min_mask)
+            # sub_predict_spec = torch.mul(mask, sub_noisy_spec).permute(0,3,2,1)
+            sub_predict_spec = mask.permute(0,3,2,1)
+            predict_spec[:, :, 1:,:] = sub_predict_spec
+            predict_spec[:, :, :1,:] = noisy_spec[:, :, :1,:]
 
-                predict_spec[:, :, 1:, :] = sub_predict_spec
-                predict_spec[:, :, :1, :] = noisy_spec[:, :, :1, :]
+            # if self.hparams.mode == 'test':
+            #     predict_spec = concat_spec_chunk(predict_spec, 64, 128, batch_size, raw_len)
+            #     predict_spec = predict_spec[:,64:192,:,:].reshape(batch_size, -1, 257, 1)[:, :raw_len, :, :]
 
+            if channel == 1:
                 # Also return predicted wav
+                predict_spec = predict_spec.squeeze(3)
+                predict_wav = self.hparams.resynth(
+                    torch.pow(10, predict_spec), noisy_wav
+                )
+            else:
                 predict_wav = self.hparams.compute_ISTFT(predict_spec)
-
             if self.hparams.mode == 'test':
                 predict_wav = concat_wave_chunk(predict_wav, left_padding, step, batch_size, raw_len)
+        return predict_wav 
 
-        return predict_wav
 
     def compute_objectives(self, predictions, batch, stage, optim_name=""):
         "Given the network predictions and targets compute the total loss"
@@ -139,8 +159,6 @@ class MetricGanBrain(sb.Brain):
         clean_wav, lens = batch.clean_sig
         clean_spec = self.compute_feats(clean_wav)
         mse_cost = self.hparams.compute_cost(predict_spec, clean_spec, lens)
-
-        # print("batch.id", batch.id)
         ids = self.compute_ids(batch.id, optim_name)
 
         # One is real, zero is fake
@@ -150,6 +168,7 @@ class MetricGanBrain(sb.Brain):
             else:
                 target_score = torch.ones(1, 1, device=self.device)
             est_score = self.est_score(predict_spec, clean_spec)
+
             self.mse_metric.append(
                 ids, predict_spec, clean_spec, lens, reduction="batch"
             )
@@ -217,14 +236,21 @@ class MetricGanBrain(sb.Brain):
                     )
 
                 lens = lens * clean_wav.shape[1]
-                for name, pred_wav, length in zip(batch.id, predict_wav, lens):
-                    name += ".wav"
-                    enhance_path = os.path.join(self.hparams.enhanced_folder, name)
-                    torchaudio.save(
-                        enhance_path,
-                        torch.unsqueeze(pred_wav[: int(length)].cpu(), 0),
-                        16000,
-                    )
+                
+                # for name, spec, length in zip(batch.id, pred_spec, lens):
+                #     name += ".pkl"
+                #     enhance_path = os.path.join(self.hparams.enhanced_folder, name)
+                #     with open(enhance_path, 'wb') as fo:
+                #         pickle.dump({'power_spec':spec.cpu()}, fo)
+
+                # for name, pred_wav, length in zip(batch.id, predict_wav, lens):
+                #     name += ".wav"
+                #     enhance_path = os.path.join(self.hparams.enhanced_folder, name)
+                #     torchaudio.save(
+                #         enhance_path,
+                #         torch.unsqueeze(pred_wav[: int(length)].cpu(), 0),
+                #         16000,
+                #     )
 
         # we do not use mse_cost to update model
         return adv_cost
@@ -400,7 +426,7 @@ class MetricGanBrain(sb.Brain):
 
         if stage == sb.Stage.TRAIN:
             if self.hparams.target_metric == "pesq":
-                self.target_metric = MetricStats(metric=pesq_eval, n_jobs=40)
+                self.target_metric = MetricStats(metric=pesq_eval, n_jobs=2)
             elif self.hparams.target_metric == "stoi":
                 self.target_metric = MetricStats(metric=stoi_loss)
             else:
@@ -416,7 +442,7 @@ class MetricGanBrain(sb.Brain):
                 print("Generator training by current data...")
 
         if stage != sb.Stage.TRAIN:
-            self.pesq_metric = MetricStats(metric=pesq_eval, n_jobs=40)
+            self.pesq_metric = MetricStats(metric=pesq_eval, n_jobs=2)
             self.stoi_metric = MetricStats(metric=stoi_loss)
 
     def train_discriminator(self):
@@ -474,8 +500,9 @@ class MetricGanBrain(sb.Brain):
             # run the test as 
             stats = {
                 "epoch": epoch,
-                "MSE distance": stage_loss,
-                # "target_metric": self.target_metric.summarize("average")
+                'mse': self.mse_metric.summarize("average"), 
+                "loss": stage_loss,
+                # "stoi": -self.target_metric.summarize("average")
             }
             self.checkpointer.save_checkpoint(meta=stats)
 
@@ -488,45 +515,32 @@ class MetricGanBrain(sb.Brain):
         elif self.hparams.target_metric == "stoi":
             stats = {
                 "epoch": epoch,
-                "MSE distance": stage_loss,
+                "loss": stage_loss,
                 "stoi": -self.stoi_metric.summarize("average"),
             }
-
-        if stage == sb.Stage.VALID:
-            if self.hparams.use_tensorboard:
-                valid_stats = {
-                    "mse": stage_loss,
-                    "pesq": 5 * self.pesq_metric.summarize("average") - 0.5,
-                    "stoi": -self.stoi_metric.summarize("average"),
-                }
-                self.hparams.tensorboard_train_logger.log_stats(valid_stats)
-            self.hparams.train_logger.log_stats(
-                {"Epoch": epoch},
-                train_stats={"loss": self.train_loss},
-                valid_stats=stats,
-            )
-            self.checkpointer.save_and_keep_only(
-                meta=stats, max_keys=[self.hparams.target_metric]
-            )
 
         if stage == sb.Stage.TEST:
             if self.hparams.mode == 'val':
                 ckpts = self.checkpointer.find_checkpoints(ckpt_predicate=ckpt_predicate)
                 assert len(ckpts) == 1
+                train_stats = {
+                    'loss': ckpts[0].meta['loss'],
+                    'mse': ckpts[0].meta['mse'],
+                }
                 # delete old ckpt from train
                 self.checkpointer.delete_checkpoints(num_to_keep=0, ckpt_predicate=ckpt_predicate)
 
                 if self.hparams.use_tensorboard:
                     valid_stats = stats
                     # will two tensorboard corrupt?
-                    self.hparams.tensorboard_train_logger.log_stats(valid_stats)
+                    self.hparams.tensorboard_train_logger.log_stats({"Epoch": epoch},train_stats=train_stats,valid_stats=valid_stats)
                 self.hparams.train_logger.log_stats(
                     {"Epoch": epoch},
                     valid_stats=stats,
                 )
                 # TODO:save current checkpointer again
                 self.checkpointer.save_and_keep_only(
-                    meta=stats, max_keys=[self.hparams.target_metric], ckpt_predicate=ckpt_predicate_lessthan
+                    num_to_keep=5, meta=stats, max_keys=[self.hparams.target_metric], ckpt_predicate=ckpt_predicate_lessthan
                     )
                 # self.checkpointer.save_checkpoint(meta=stats)
 
@@ -647,7 +661,7 @@ def dataio_prep(hparams):
             output_keys=["id", "noisy_sig", "clean_sig", "loc", "images", "ra"],
         )
     datasets['test'] = sb.dataio.dataset.DynamicItemDataset.from_csv(
-        csv_path=hparams[f"{dataset}_annotation"],
+        csv_path=hparams[f"test_annotation"],
         replacements={"data_root": hparams["data_folder"]},
         dynamic_items=[test_audio_pipeline],
         output_keys=["id", "noisy_sig", "clean_sig", "loc", "images", "ra"],

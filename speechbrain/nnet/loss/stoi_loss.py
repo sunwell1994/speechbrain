@@ -149,11 +149,13 @@ def stoi_loss(y_pred_batch, y_true_batch, lens, reduction="mean"):
     for i in range(0, batch_size):  # Run over mini-batches
         y_true = y_true_batch[i, 0 : int(lens[i] * y_pred_batch.shape[1])]
         y_pred = y_pred_batch[i, 0 : int(lens[i] * y_pred_batch.shape[1])]
+        
+        # print("y_pred device", y_pred.device)
 
         y_true, y_pred = resampler(y_true), resampler(y_pred)
-
+        
         [y_sil_true, y_sil_pred] = removeSilentFrames(y_true, y_pred)
-
+        
         stft_true = torchaudio.transforms.Spectrogram(
             n_fft=512, win_length=256, hop_length=128, power=2
         )(y_sil_true)
@@ -189,6 +191,7 @@ def stoi_loss(y_pred_batch, y_true_batch, lens, reduction="mean"):
             yn = yn / (torch.norm(yn, dim=-1, keepdim=True) + smallVal)
             d = torch.sum(xn * yn)
             D[i] = d / (J * M)
+            # print("tensor device in the stoi_loss finally",D[i].device)
         else:
             D[i] = 0
 
