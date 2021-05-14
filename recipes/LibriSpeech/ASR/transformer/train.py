@@ -41,6 +41,7 @@ from pathlib import Path
 import speechbrain as sb
 from hyperpyyaml import load_hyperpyyaml
 from speechbrain.utils.distributed import run_on_main
+from speechbrain.pretrained import TransformerASR
 
 
 logger = logging.getLogger(__name__)
@@ -66,23 +67,23 @@ class ASR(sb.core.Brain):
         feats = self.hparams.compute_features(wavs)
         current_epoch = self.hparams.epoch_counter.current
         feats = self.hparams.normalize(feats, wav_lens, epoch=current_epoch)
-
         if stage == sb.Stage.TRAIN:
             if hasattr(self.hparams, "augmentation"):
                 feats = self.hparams.augmentation(feats)
 
         # forward modules
-        src = self.hparams.CNN(feats)
-        enc_out, pred = self.hparams.Transformer(
+        feats.requires_grad = True
+        src = self.modules.CNN(feats)
+        enc_out, pred = self.modules.Transformer(
             src, tokens_bos, wav_lens, pad_idx=self.hparams.pad_index
         )
 
         # output layer for ctc log-probabilities
-        logits = self.hparams.ctc_lin(enc_out)
+        logits = self.modules.ctc_lin(enc_out)
         p_ctc = self.hparams.log_softmax(logits)
 
         # output layer for seq2seq log-probabilities
-        pred = self.hparams.seq_lin(pred)
+        pred = self.modules.seq_lin(pred)
         p_seq = self.hparams.log_softmax(pred)
 
         # Compute outputs
@@ -287,7 +288,7 @@ class ASR(sb.core.Brain):
                     device=torch.device(self.device)
                 )
 
-    def on_evaluate_start(self, max_key=None, min_key=None):
+    def on_evaluate_start(self, max_key=None, min_key=None, ckpt_predicate=None):
         """perform checkpoint averge if needed"""
         super().on_evaluate_start()
 
@@ -337,7 +338,7 @@ def dataio_prepare(hparams):
     @sb.utils.data_pipeline.takes("wav")
     @sb.utils.data_pipeline.provides("sig")
     def audio_pipeline(wav):
-        sig = sb.dataio.dataio.read_audio(wav)
+        sig = sb.dataio.dataio.read_audio(os.path.join("/vision/vision_users/changan/learn_speech_by_visual/learning-to-hear-by-seeing/", wav))
         return sig
 
     sb.dataio.dataset.add_dynamic_item(datasets, audio_pipeline)
@@ -410,14 +411,42 @@ if __name__ == "__main__":
     run_on_main(hparams["pretrainer"].collect_files)
     hparams["pretrainer"].load_collected(device=run_opts["device"])
 
-    # Trainer initialization
-    asr_brain = ASR(
-        modules=hparams["modules"],
-        opt_class=hparams["Adam"],
-        hparams=hparams,
-        run_opts=run_opts,
-        checkpointer=hparams["checkpointer"],
-    )
+
+    if hparams["finetune"]:
+        asr_model = TransformerASR.from_hparams(source="speechbrain/asr-transformer-transformerlm-librispeech",
+                                                savedir="pretrained_models/asr-transformer-transformerlm-librispeech")
+
+        modules = {"CNN": asr_model.modules.asr_model[0], 
+            "Transformer": asr_model.modules.asr_model[1],
+            "seq_lin": asr_model.modules.asr_model[2],
+            "ctc_lin": asr_model.modules.asr_model[-1]
+            }
+        print(hparams['valid_search'])
+        hparams['valid_search'].modules= [asr_model.modules.asr_model[1], asr_model.modules.asr_model[2], asr_model.modules.asr_model[3]]
+        asr_brain = ASR(
+            modules=modules,
+            opt_class=hparams["Adam"],
+            hparams=hparams,
+            run_opts=run_opts,
+            checkpointer=hparams["checkpointer"],
+        )
+        # point these module to current model 
+        # asr_brain.hparams.valid_search.model = asr_model.modules.asr_model[1] #asr_brain.modules['Transformer']
+        # asr_brain.hparams.valid_search.fc = asr_model.modules.asr_model[2] # asr_brain.modules['seq_lin']
+        # asr_brain.hparams.valid_search.ctc_fs = asr_model.modules.asr_model[3] #asr_brain.modules['ctc_lin']
+        # asr_brain.hparams.test_search.model = asr_model.modules.asr_model[1] # asr_brain.modules['Transformer']
+        # asr_brain.hparams.test_search.fc =  asr_model.modules.asr_model[2] # asr_brain.modules['seq_lin']
+        # asr_brain.hparams.test_search.ctc_fs = asr_model.modules.asr_model[3] # asr_brain.modules['ctc_lin']
+
+    else:
+        # Trainer initialization
+        asr_brain = ASR(
+            modules=hparams["modules"],
+            opt_class=hparams["Adam"],
+            hparams=hparams,
+            run_opts=run_opts,
+            checkpointer=hparams["checkpointer"],
+        )
 
     # adding objects to trainer:
     asr_brain.tokenizer = hparams["tokenizer"]

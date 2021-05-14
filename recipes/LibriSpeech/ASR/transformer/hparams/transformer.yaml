@@ -8,7 +8,7 @@
 # Authors:  Jianyuan Zhong, Titouan Parcollet
 # ############################################################################
 # Seed needs to be set at top of yaml, before objects with parameters are made
-seed: 8886
+seed: 8895
 __set_seed: !apply:torch.manual_seed [!ref <seed>]
 output_folder: !ref results/transformer/<seed>
 wer_file: !ref <output_folder>/wer.txt
@@ -22,6 +22,7 @@ train_log: !ref <output_folder>/train_log.txt
 # directory containing the lm.ckpt and tokenizer.ckpt may also be specified
 # instead. E.g if you want to use your own LM / tokenizer.
 pretrained_lm_tokenizer_path: speechbrain/asr-transformer-transformerlm-librispeech
+finetune: False
 
 # Data files
 data_folder: !PLACEHOLDER # e.g., /path/to/LibriSpeech
@@ -29,22 +30,24 @@ data_folder: !PLACEHOLDER # e.g., /path/to/LibriSpeech
 # then data_folder_rirs should be /localscratch/xxx_corpus
 # otherwise the dataset will automatically be downloaded
 data_folder_rirs: !ref <data_folder>
-train_splits: ["train-clean-100", "train-clean-360", "train-other-500"]
+# train_splits: ["train-clean-100", "train-clean-360", "train-other-500"]
+train_splits: ["train-clean-100"]
 dev_splits: ["dev-clean"]
-test_splits: ["test-clean", "test-other"]
-skip_prep: False
+# test_splits: ["test-clean", "test-other"]
+test_splits: ["test-clean"]
+skip_prep: True
 train_csv: !ref <data_folder>/train.csv
-valid_csv: !ref <data_folder>/dev-clean.csv
+valid_csv: !ref <data_folder>/val.csv
 test_csv:
-    - !ref <data_folder>/test-clean.csv
-    - !ref <data_folder>/test-other.csv
+    - !ref <data_folder>/test-seen.csv
+    # - !ref <data_folder>/test-other.csv
 
 # Training parameters
 # To make Transformers converge, the global bath size should be large enough.
 # The global batch size is computed as batch_size * n_gpus * gradient_accumulation.
 # Empirically, we found that this value should be >= 128.
 # Please, set your parameters accordingly.
-number_of_epochs: 110
+number_of_epochs: 20
 batch_size: 16 # This works for 2x GPUs with 32GB
 ctc_weight: 0.3
 gradient_accumulation: 4
@@ -68,10 +71,10 @@ train_dataloader_opts:
     shuffle: True
 
 valid_dataloader_opts:
-    batch_size: 1
+    batch_size: 4
 
 test_dataloader_opts:
-    batch_size: 1
+    batch_size: 4
 
 ####################### Model parameters ###########################
 # Transformer
@@ -96,7 +99,7 @@ unk_index: 0
 # Decoding parameters
 min_decode_ratio: 0.0
 max_decode_ratio: 1.0
-valid_search_interval: 10
+valid_search_interval: 20
 valid_beam_size: 10
 test_beam_size: 66
 lm_weight: 0.60

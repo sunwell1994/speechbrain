@@ -14,7 +14,6 @@ import os
 import sys
 import shutil
 import torch
-torch.set_num_threads(1)
 import torchaudio
 import speechbrain as sb
 import pickle
@@ -80,86 +79,92 @@ class MetricGanBrain(sb.Brain):
     def compute_objectives(self, predictions, batch, stage, optim_name=""):
         "Given the network predictions and targets compute the total loss"
         predict_wav = predictions
-        # predict_spec = self.compute_feats(predict_wav)
+        predict_spec = self.compute_feats(predict_wav)
 
         clean_wav, lens = batch.clean_sig
-        
-        # clean_spec = self.compute_feats(clean_wav)
-        # # print(clean_wav.size(), predict_wav.size())
-        # # print(clean_spec.size(), predict_spec.size())
-        # mse_cost = self.hparams.compute_cost(predict_spec, clean_spec, lens)
+        clean_spec = self.compute_feats(clean_wav)
+        # print(clean_wav.size(), predict_wav.size())
+        # print(clean_spec.size(), predict_spec.size())
+        mse_cost = self.hparams.compute_cost(predict_spec, clean_spec, lens)
 
-        # # print("batch.id", batch.id)
-        # ids = self.compute_ids(batch.id, optim_name)
+        # print("batch.id", batch.id)
+        ids = self.compute_ids(batch.id, optim_name)
 
-        # # One is real, zero is fake
-        # if optim_name == "generator" or optim_name == "":
-        #     if optim_name == "generator":
-        #         target_score = torch.ones(self.batch_size, 1, device=self.device)
-        #     else:
-        #         target_score = torch.ones(1, 1, device=self.device)
-        #     # if optim_name == "":
-        #     #     print("predict_wav", predict_wav.size(), clean_wav.size())
-        #     #     print("predict_spec: ", predict_spec.size(), clean_spec.size())
-        #     est_score = self.est_score(predict_spec, clean_spec)
-        #     self.mse_metric.append(
-        #         ids, predict_spec, clean_spec, lens, reduction="batch"
-        #     )
+        # One is real, zero is fake
+        if optim_name == "generator" or optim_name == "":
+            if optim_name == "generator":
+                target_score = torch.ones(self.batch_size, 1, device=self.device)
+            else:
+                target_score = torch.ones(1, 1, device=self.device)
+            # if optim_name == "":
+            #     print("predict_wav", predict_wav.size(), clean_wav.size())
+            #     print("predict_spec: ", predict_spec.size(), clean_spec.size())
+            est_score = self.est_score(predict_spec, clean_spec)
+            self.mse_metric.append(
+                ids, predict_spec, clean_spec, lens, reduction="batch"
+            )
 
-        # # D Learns to estimate the scores of clean speech
-        # elif optim_name == "D_clean":
-        #     target_score = torch.ones(self.batch_size, 1, device=self.device)
-        #     est_score = self.est_score(clean_spec, clean_spec)
+        # D Learns to estimate the scores of clean speech
+        elif optim_name == "D_clean":
+            target_score = torch.ones(self.batch_size, 1, device=self.device)
+            est_score = self.est_score(clean_spec, clean_spec)
 
-        # # D Learns to estimate the scores of enhanced speech
-        # elif optim_name == "D_enh" and self.sub_stage == SubStage.CURRENT:
-        #     target_score = self.score(ids, predict_wav, clean_wav, lens)
-        #     est_score = self.est_score(predict_spec, clean_spec)
+        # D Learns to estimate the scores of enhanced speech
+        elif optim_name == "D_enh" and self.sub_stage == SubStage.CURRENT:
+            target_score = self.score(ids, predict_wav, clean_wav, lens)
+            est_score = self.est_score(predict_spec, clean_spec)
 
-        #     # Write enhanced wavs during discriminator training, because we
-        #     # compute the actual score here and we can save it
-        #     self.write_wavs(batch.id, ids, predict_wav, target_score, lens)
+            # Write enhanced wavs during discriminator training, because we
+            # compute the actual score here and we can save it
+            self.write_wavs(batch.id, ids, predict_wav, target_score, lens)
 
-        # # D Relearns to estimate the scores of previous epochs
-        # elif optim_name == "D_enh" and self.sub_stage == SubStage.HISTORICAL:
-        #     target_score = batch.score.unsqueeze(1).float()
-        #     est_score = self.est_score(predict_spec, clean_spec)
+        # D Relearns to estimate the scores of previous epochs
+        elif optim_name == "D_enh" and self.sub_stage == SubStage.HISTORICAL:
+            target_score = batch.score.unsqueeze(1).float()
+            est_score = self.est_score(predict_spec, clean_spec)
 
-        # # D Learns to estimate the scores of noisy speech
-        # elif optim_name == "D_noisy":
-        #     noisy_wav, _ = batch.noisy_sig
-        #     noisy_spec = self.compute_feats(noisy_wav)
-        #     target_score = self.score(ids, noisy_wav, clean_wav, lens)
-        #     est_score = self.est_score(noisy_spec, clean_spec)
+        # D Learns to estimate the scores of noisy speech
+        elif optim_name == "D_noisy":
+            noisy_wav, _ = batch.noisy_sig
+            noisy_spec = self.compute_feats(noisy_wav)
+            target_score = self.score(ids, noisy_wav, clean_wav, lens)
+            est_score = self.est_score(noisy_spec, clean_spec)
 
-        #     # Save scores of noisy wavs
-        #     self.save_noisy_scores(ids, target_score)
+            # Save scores of noisy wavs
+            self.save_noisy_scores(ids, target_score)
 
-        # else:
-        #     raise ValueError(f"{optim_name} is not a valid 'optim_name'")
+        else:
+            raise ValueError(f"{optim_name} is not a valid 'optim_name'")
 
-        # # Compute the cost
-        # adv_cost = self.hparams.compute_cost(est_score, target_score)
-        # if optim_name == "generator":
-        #     adv_cost += self.hparams.mse_weight * mse_cost
-        #     self.metrics["G"].append(adv_cost.detach())
-        # else:
-        #     self.metrics["D"].append(adv_cost.detach())
+        # Compute the cost
+        adv_cost = self.hparams.compute_cost(est_score, target_score)
+        if optim_name == "generator":
+            adv_cost += self.hparams.mse_weight * mse_cost
+            self.metrics["G"].append(adv_cost.detach())
+        else:
+            self.metrics["D"].append(adv_cost.detach())
 
         # On validation data compute scores
         if stage != sb.Stage.TRAIN:
             # Evaluate speech quality/intelligibility
-            if self.hparams.target_metric == "stoi":
-                self.stoi_metric.append(
-                    batch.id, predict_wav, clean_wav, lens, reduction="batch"
-                )
-            elif self.hparams.target_metric == "pesq":
-                self.pesq_metric.append(
-                    batch.id, predict=predict_wav, target=clean_wav, lengths=lens
-                )
+            if self.hparams.mode == 'val':
+                if self.hparams.target_metric == "stoi":
+                    self.stoi_metric.append(
+                        batch.id, predict_wav, clean_wav, lens, reduction="batch"
+                    )
+                elif self.hparams.target_metric == "pesq":
+                    self.pesq_metric.append(
+                        batch.id, predict=predict_wav, target=clean_wav, lengths=lens
+                    )
 
             # Write wavs to file, for evaluation
-            if self.hparams.mode == 'test':
+            elif self.hparams.mode == 'test':
+                self.stoi_metric.append(
+                        batch.id, predict_wav, clean_wav, lens, reduction="batch"
+                    )
+                self.pesq_metric.append(
+                        batch.id, predict=predict_wav, target=clean_wav, lengths=lens
+                    )
                 lens = lens * clean_wav.shape[1]
                 for name, pred_wav, length in zip(batch.id, predict_wav, lens):
                     name += ".wav"
@@ -171,7 +176,7 @@ class MetricGanBrain(sb.Brain):
                     )
 
         # we do not use mse_cost to update model
-        return torch.zeros(1)
+        return adv_cost
 
     def compute_ids(self, batch_id, optim_name):
         """Returns the list of ids, edited via optimizer name."""
@@ -343,7 +348,7 @@ class MetricGanBrain(sb.Brain):
 
         if stage == sb.Stage.TRAIN:
             if self.hparams.target_metric == "pesq":
-                self.target_metric = MetricStats(metric=pesq_eval, n_jobs=30)
+                self.target_metric = MetricStats(metric=pesq_eval, n_jobs=40)
             elif self.hparams.target_metric == "stoi":
                 self.target_metric = MetricStats(metric=stoi_loss)
             else:
@@ -435,6 +440,22 @@ class MetricGanBrain(sb.Brain):
                 "stoi": -self.stoi_metric.summarize("average"),
             }
 
+        if stage == sb.Stage.VALID:
+            if self.hparams.use_tensorboard:
+                valid_stats = {
+                    "mse": stage_loss,
+                    "pesq": 5 * self.pesq_metric.summarize("average") - 0.5,
+                    "stoi": -self.stoi_metric.summarize("average"),
+                }
+                self.hparams.tensorboard_train_logger.log_stats(valid_stats)
+            self.hparams.train_logger.log_stats(
+                {"Epoch": epoch},
+                train_stats={"loss": self.train_loss},
+                valid_stats=stats,
+            )
+            self.checkpointer.save_and_keep_only(
+                meta=stats, max_keys=[self.hparams.target_metric]
+            )
 
         if stage == sb.Stage.TEST:
             if self.hparams.mode == 'val':
@@ -458,10 +479,18 @@ class MetricGanBrain(sb.Brain):
                 # self.checkpointer.save_checkpoint(meta=stats)
 
             else:
-                self.hparams.train_logger.log_stats(
-                    {"Epoch loaded": self.hparams.epoch_counter.current},
-                    test_stats=stats,
-                )
+                print("Epoch loaded", self.hparams.epoch_counter.current)
+                print("stoi", -self.stoi_metric.summarize("average"))
+                print("pesq", 5 * self.pesq_metric.summarize("average") - 0.5)
+                test_stats = {
+                    "mse": stage_loss,
+                    "pesq": 5 * self.pesq_metric.summarize("average") - 0.5,
+                    "stoi": -self.stoi_metric.summarize("average"),
+                }
+                # self.hparams.train_logger.log_stats(
+                #     {"Epoch loaded": self.hparams.epoch_counter.current},
+                #     test_stats=test_stats,
+                # )
 
     def make_dataloader(
         self, dataset, stage, ckpt_prefix="dataloader-", **loader_kwargs
@@ -524,11 +553,8 @@ class MetricGanBrain(sb.Brain):
 def audio_pipeline(pkl_path):
     with open(pkl_path, 'rb') as fo:
         data = pickle.load(fo)
-        source_audio = torch.from_numpy(data['source_audio'])
-        receiver_audio = torch.from_numpy(data['receiver_audio'])
-
-        yield receiver_audio/torch.max(torch.abs(receiver_audio))
-        yield source_audio/torch.max(torch.abs(source_audio))
+        yield data[0][:len(data[1])]/torch.max(torch.abs(data[0][:len(data[1])]))
+        yield data[1]/torch.max(torch.abs(data[1]))
 
 # For historical data
 @sb.utils.data_pipeline.takes("enh_wav", "clean_wav")
@@ -537,8 +563,17 @@ def enh_pipeline(enh_wav, clean_wav):
     yield sb.dataio.dataio.read_audio(enh_wav)
     with open(clean_wav, 'rb') as fo:
         data = pickle.load(fo)
-        source_audio = torch.from_numpy(data['source_audio'])
-        yield source_audio/torch.max(torch.abs(source_audio))
+        # yield data[1]
+        yield data[1]/torch.max(torch.abs(data[1]))
+
+# @sb.utils.data_pipeline.takes("pkl")
+# @sb.utils.data_pipeline.provides("noisy_sig", "clean_sig", "loc", "images", "ra")
+# def multimodal_pipeline(pkl_path):
+#     with open(pkl_path, 'rb') as fo:
+#         data = pickle.load(fo)
+#         yield data[0][:len(data[1])]/torch.max(torch.abs(data[0][:len(data[1])]))
+#         yield data[1]/torch.max(torch.abs(data[1]))
+
 
 def dataio_prep(hparams):
     """This function prepares the datasets to be used in the brain class."""
@@ -573,7 +608,7 @@ if __name__ == "__main__":
     sb.utils.distributed.ddp_init_group(run_opts)
 
     # Data preparation
-    from voicebank_prepare import prepare_voicebank  # noqa
+    # from voicebank_prepare import prepare_voicebank  # noqa
 
     # run_on_main(
     #     prepare_voicebank,
@@ -636,7 +671,7 @@ if __name__ == "__main__":
         # evaluate is totally same as valid except requiring loading the ckpt by max keys
         # use ckpt_predicate to filter epoch == specific one
         # overwrite current checkpoint with the new max_key of pesq/stoi
-        epoch_init = se_brain.hparams.val_epoch
+        epoch_init = 362
         def ckpt_predicate(ckpt):
             return ckpt.meta['epoch'] == epoch_init
         while epoch_init <= hparams['number_of_epochs']:

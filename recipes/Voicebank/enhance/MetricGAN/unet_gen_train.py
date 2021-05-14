@@ -98,7 +98,7 @@ class MetricGanBrain(sb.Brain):
         """Feature computation pipeline"""
         feats = self.hparams.compute_STFT(wavs)
         feats = spectral_magnitude(feats, power=0.5)
-        feats = torch.log10(feats)
+        feats = torch.log1p(feats)
         return feats
 
     def compute_forward(self, batch, stage):
@@ -142,7 +142,7 @@ class MetricGanBrain(sb.Brain):
                 # Also return predicted wav
                 predict_spec = predict_spec.squeeze(3)
                 predict_wav = self.hparams.resynth(
-                    torch.pow(10, predict_spec), noisy_wav
+                    torch.expm1(predict_spec), noisy_wav
                 )
             else:
                 predict_wav = self.hparams.compute_ISTFT(predict_spec)
