@@ -160,7 +160,7 @@ class RNN(torch.nn.Module):
             raw_length = x.size(1)
             x = pack_padded_sequence(x, lengths)
 
-        # Support custom inital state
+        # Support custom initial state
         if hx is not None:
             output, hn = self.rnn(x, hx=hx)
         else:
@@ -199,7 +199,7 @@ class LSTM(torch.nn.Module):
         It True, orthogonal initialization is used for the recurrent weights.
         Xavier initialization is used for the input connection weights.
     bidirectional : bool
-        If True, a bidirectinoal model that scans the sequence both
+        If True, a bidirectional model that scans the sequence both
         right-to-left and left-to-right is used.
 
     Example
@@ -272,7 +272,7 @@ class LSTM(torch.nn.Module):
             raw_length = x.size(1)
             x = pack_padded_sequence(x, lengths)
 
-        # Support custom inital state
+        # Support custom initial state
         if hx is not None:
             output, hn = self.rnn(x, hx=hx)
         else:
@@ -384,7 +384,7 @@ class GRU(torch.nn.Module):
             raw_length = x.size(1)
             x = pack_padded_sequence(x, lengths)
 
-        # Support custom inital state
+        # Support custom initial state
         if hx is not None:
             output, hn = self.rnn(x, hx=hx)
         else:

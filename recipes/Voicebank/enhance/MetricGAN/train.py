@@ -83,6 +83,7 @@ class MetricGanBrain(sb.Brain):
         # predict_spec = self.compute_feats(predict_wav)
 
         clean_wav, lens = batch.clean_sig
+<<<<<<< HEAD
         
         # clean_spec = self.compute_feats(clean_wav)
         # # print(clean_wav.size(), predict_wav.size())
@@ -145,9 +146,62 @@ class MetricGanBrain(sb.Brain):
         #     self.metrics["G"].append(adv_cost.detach())
         # else:
         #     self.metrics["D"].append(adv_cost.detach())
+=======
+        clean_spec = self.compute_feats(clean_wav)
+        mse_cost = self.hparams.compute_cost(predict_spec, clean_spec, lens)
+
+        ids = self.compute_ids(batch.id, optim_name)
+
+        # One is real, zero is fake
+        if optim_name == "generator":
+            target_score = torch.ones(self.batch_size, 1, device=self.device)
+            est_score = self.est_score(predict_spec, clean_spec)
+            self.mse_metric.append(
+                ids, predict_spec, clean_spec, lens, reduction="batch"
+            )
+
+        # D Learns to estimate the scores of clean speech
+        elif optim_name == "D_clean":
+            target_score = torch.ones(self.batch_size, 1, device=self.device)
+            est_score = self.est_score(clean_spec, clean_spec)
+
+        # D Learns to estimate the scores of enhanced speech
+        elif optim_name == "D_enh" and self.sub_stage == SubStage.CURRENT:
+            target_score = self.score(ids, predict_wav, clean_wav, lens)
+            est_score = self.est_score(predict_spec, clean_spec)
+
+            # Write enhanced wavs during discriminator training, because we
+            # compute the actual score here and we can save it
+            self.write_wavs(batch.id, ids, predict_wav, target_score, lens)
+
+        # D Relearns to estimate the scores of previous epochs
+        elif optim_name == "D_enh" and self.sub_stage == SubStage.HISTORICAL:
+            target_score = batch.score.unsqueeze(1).float()
+            est_score = self.est_score(predict_spec, clean_spec)
+
+        # D Learns to estimate the scores of noisy speech
+        elif optim_name == "D_noisy":
+            noisy_wav, _ = batch.noisy_sig
+            noisy_spec = self.compute_feats(noisy_wav)
+            target_score = self.score(ids, noisy_wav, clean_wav, lens)
+            est_score = self.est_score(noisy_spec, clean_spec)
+
+            # Save scores of noisy wavs
+            self.save_noisy_scores(ids, target_score)
+
+        if stage == sb.Stage.TRAIN:
+            # Compute the cost
+            adv_cost = self.hparams.compute_cost(est_score, target_score)
+            if optim_name == "generator":
+                adv_cost += self.hparams.mse_weight * mse_cost
+                self.metrics["G"].append(adv_cost.detach())
+            else:
+                self.metrics["D"].append(adv_cost.detach())
+>>>>>>> original/develop
 
         # On validation data compute scores
         if stage != sb.Stage.TRAIN:
+            adv_cost = mse_cost
             # Evaluate speech quality/intelligibility
             if self.hparams.target_metric == "stoi":
                 self.stoi_metric.append(
@@ -321,6 +375,12 @@ class MetricGanBrain(sb.Brain):
                 self.d_optimizer.step()
             loss_tracker += loss.detach()
         elif self.sub_stage == SubStage.GENERATOR:
+            for name, param in self.modules.generator.named_parameters():
+                if "Learnable_sigmoid" in name:
+                    param.data = torch.clamp(
+                        param, max=3.5
+                    )  # to prevent gradient goes to infinity
+
             loss = self.compute_objectives(
                 predictions, batch, sb.Stage.TRAIN, "generator"
             )
@@ -329,6 +389,7 @@ class MetricGanBrain(sb.Brain):
             if self.check_gradients(loss):
                 self.g_optimizer.step()
             loss_tracker += loss.detach()
+
         return loss_tracker
 
     def on_stage_start(self, stage, epoch=None):
@@ -343,7 +404,7 @@ class MetricGanBrain(sb.Brain):
 
         if stage == sb.Stage.TRAIN:
             if self.hparams.target_metric == "pesq":
-                self.target_metric = MetricStats(metric=pesq_eval, n_jobs=30)
+                self.target_metric = MetricStats(metric=pesq_eval, n_jobs=5)
             elif self.hparams.target_metric == "stoi":
                 self.target_metric = MetricStats(metric=stoi_loss)
             else:
@@ -359,7 +420,7 @@ class MetricGanBrain(sb.Brain):
                 print("Generator training by current data...")
 
         if stage != sb.Stage.TRAIN:
-            self.pesq_metric = MetricStats(metric=pesq_eval, n_jobs=30)
+            self.pesq_metric = MetricStats(metric=pesq_eval, n_jobs=5)
             self.stoi_metric = MetricStats(metric=stoi_loss)
 
     def train_discriminator(self):
@@ -518,8 +579,13 @@ class MetricGanBrain(sb.Brain):
             self.checkpointer.add_recoverable("d_opt", self.d_optimizer)
 
 
+<<<<<<< HEAD
 # Define audio piplines
 @sb.utils.data_pipeline.takes("pkl")
+=======
+# Define audio pipelines
+@sb.utils.data_pipeline.takes("noisy_wav", "clean_wav")
+>>>>>>> original/develop
 @sb.utils.data_pipeline.provides("noisy_sig", "clean_sig")
 def audio_pipeline(pkl_path):
     with open(pkl_path, 'rb') as fo:
@@ -575,6 +641,7 @@ if __name__ == "__main__":
     # Data preparation
     from voicebank_prepare import prepare_voicebank  # noqa
 
+<<<<<<< HEAD
     # run_on_main(
     #     prepare_voicebank,
     #     kwargs={
@@ -583,6 +650,16 @@ if __name__ == "__main__":
     #         "skip_prep": hparams["skip_prep"],
     #     },
     # )
+=======
+    run_on_main(
+        prepare_voicebank,
+        kwargs={
+            "data_folder": hparams["data_folder"],
+            "save_folder": hparams["data_folder"],
+            "skip_prep": hparams["skip_prep"],
+        },
+    )
+>>>>>>> original/develop
 
     # Create dataset objects
     datasets = dataio_prep(hparams)
